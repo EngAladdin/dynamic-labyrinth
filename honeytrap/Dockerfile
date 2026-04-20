@@ -1,31 +1,26 @@
-FROM golang:1.20-alpine AS builder
+FROM golang:latest AS go
 
-RUN apk add --no-cache git
+ENV GOPATH /go
+ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
 
-WORKDIR /app
+ADD . /src/honeytrap
 
-# نسخ go.mod و go.sum أولاً (للاستفادة من caching)
-COPY go.mod go.sum ./
-RUN go mod download
+ARG LDFLAGS=""
 
-# نسخ الكود المتبقي
-COPY . .
+WORKDIR /src/honeytrap
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -tags="" -ldflags="$(go run scripts/gen-ldflags.go)" -o /go/bin/app .
 
-# إصلاح مسارات الاستيراد (تحويل imports المحلية إلى imports كاملة)
-RUN find . -name "*.go" -exec sed -i 's|"./services|"github.com/honeytrap/honeytrap/services|g' {} \;
+FROM alpine
+MAINTAINER  Remco Verhoef <remco.verhoef@dutchsec.com>
 
-# بناء honeytrap
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o honeytrap ./cmd/honeytrap
+RUN apk --update upgrade && apk add curl ca-certificates && rm -rf /var/cache/apk/*
+RUN apk add ca-certificates && update-ca-certificates
 
-FROM alpine:latest
+RUN mkdir /config /data
 
-RUN apk --no-cache add ca-certificates
-RUN mkdir -p /config /data
+RUN curl -s -o /config/config.toml https://raw.githubusercontent.com/honeytrap/honeytrap-configs/master/server-standalone/config-server-standalone.toml
+COPY --from=go /go/bin/app /honeytrap/honeytrap
 
-COPY --from=builder /app/honeytrap /usr/local/bin/honeytrap
-COPY config.toml /config/config.toml
+ENTRYPOINT ["/honeytrap/honeytrap", "--config", "/config/config.toml", "--data", "/data/"]
 
-EXPOSE 8022 8080
-
-ENTRYPOINT ["honeytrap"]
-CMD ["--config", "/config/config.toml", "--data", "/data/"]
+EXPOSE 8022 5900
